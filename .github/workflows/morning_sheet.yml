@@ -1,0 +1,28 @@
+name: Daily morning sheet
+
+on:
+  schedule:
+    - cron: "45 22 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sheet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Build the morning sheet
+        run: python scripts/build_sheet.py
+      - name: Commit the sheet
+        run: |
+          git config user.name "basket-bot"
+          git config user.email "basket-bot@users.noreply.github.com"
+          git add sheet/latest.json data/weights_top50.csv
+          git diff --cached --quiet || git commit -m "Morning sheet $(date -u +%F)"
+          git push
