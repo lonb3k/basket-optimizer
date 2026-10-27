@@ -1,5 +1,9 @@
 # Basket Optimizer: where does a basket's performance come from?
 
+**Live morning sheet: [https://morning-sheet-nine.vercel.app/basket](https://morning-sheet-nine.vercel.app/basket)**, regenerated every weekday after the US close.
+
+![morning sheet](docs/morning_sheet.gif)
+
 Streamlit app that builds risk-based baskets on the 50 largest S&P 500 names, tests six
 weighting schemes walk-forward with turnover costs, adds a volatility-target overlay, and sweeps
 a concentration limit on the Mag 7. The question it answers is not "which optimizer is best"
@@ -83,6 +87,22 @@ small turnover after drift; the vol-target overlay delivers the target.
 ```
 
 Prints today's weights and risk shares and the trades against the last saved sheet.
+
+
+## Morning sheet
+
+`src/basket/sheet.py` reads the dashboard for you: it runs the functions above on the
+latest close and returns a desk note as a plain dict (tiles with sparklines, sentences with the
+numbers filled in, trade ideas ranked by historical conditional expectation divided by the
+historical worst case in the same regime, and the Plotly figures as JSON). It covers today's risk-parity weights, the vol-target leverage, the realized-vol regime, and which basket history says to hold this month, with conditional expectation and worst case.
+
+- `python scripts/build_sheet.py [--offline]` writes `sheet/latest.json`.
+- The daily GitHub Actions workflow rebuilds it after the close and commits it.
+- The front end ([lonb3k/morning-sheet](https://github.com/lonb3k/morning-sheet), Next.js on Vercel)
+  reads that JSON and renders it at [https://morning-sheet-nine.vercel.app/basket](https://morning-sheet-nine.vercel.app/basket), next to the sheets of the
+  two sister projects. The Streamlit app stays the full interactive version.
+
+No financial logic lives in `sheet.py`: every number comes from a function that already exists in `src/`.
 
 ## Run it
 
