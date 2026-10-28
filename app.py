@@ -18,7 +18,7 @@ import streamlit as st
 warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from basket import backtest as bt, charts, covariance as cv, optimizers as opt, risk as rk  # noqa: E402
+from basket import backtest as bt, charts, covariance as cv, implied_corr as ic, optimizers as opt, risk as rk  # noqa: E402
 from basket.data import load_cboe_index, load_prices  # noqa: E402
 from basket.universe import MAG7, load_weights, sector_of  # noqa: E402
 
@@ -97,6 +97,33 @@ def cap_sweep(tickers: tuple[str, ...], method: str, estimator: str, window: int
     return pd.DataFrame(rows)
 
 
+FORECAST = "COR1M + last quarter, 5y rolling"
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+@offline_disk_cache
+def implied_risk(tickers: tuple[str, ...], window: int, max_weight: float, cost_bps: float, offline: bool):
+    """Correlation forecast race, risk-forecast tests and min-variance walk-forward per covariance estimator."""
+    px = load_prices(list(tickers), start="2005-01-01", offline=offline)
+    r = bt.log_returns(px[list(tickers)]).iloc[1:]
+    cor = load_cboe_index("COR1M", offline=offline)
+    race = ic.forecast_race(ic.correlation_panel(r, cor, first=window))
+    fc = race[FORECAST]
+    start = int(np.searchsorted(r.index, fc.dropna().index[0])) + 1
+    ests = {"Sample": cv.sample_cov, "Ledoit-Wolf": lambda h: cv.ledoit_wolf_cov(h)[0], **ic.implied_estimators(fc),
+            "Implied level, raw COR1M": ic.implied_estimators(cor / 100)["Implied level"]}
+    ew = ic.risk_scores(ic.risk_forecast_test(r, ests, lambda h: pd.Series(1 / h.shape[1], index=h.columns), window, start=start))
+    mv = ic.risk_scores(ic.risk_forecast_test(r, ests, lambda c: opt.min_variance(c, max_weight=max_weight), window,
+                                              start=start, own_weights=True))
+    rows = {}
+    for name, est in ests.items():
+        sim = bt.simulate(r, bt.walk_forward_weights(r, "Min variance", est, window, 21, max_weight, None, start), cost_bps)
+        s = bt.stats(sim["ret"], name)
+        s["avg_turnover_%"] = float(sim.loc[sim["turnover"] > 0, "turnover"].mean() * 100)
+        rows[name] = s
+    return race, ew, mv, pd.DataFrame(rows).T, r.index[start]
+
+
 def fmt(x, suffix="%", d=1):
     return "n/a" if x is None or pd.isna(x) else f"{x:.{d}f}{suffix}"
 
@@ -126,7 +153,7 @@ st.warning("**Survivorship, stated upfront.** Today's top 50 are the winners of 
            "Comparisons between schemes are fair (same universe); comparisons with the index are not. RSP (equal-weight S&P 500 ETF) is "
            "shown as the honest equal-weight benchmark without survivorship.", icon="⚠️")
 
-tabs = st.tabs(["Build today", "Race", "Vol targeting", "Concentration", "Diagnostics"])
+tabs = st.tabs(["Build today", "Race", "Vol targeting", "Concentration", "Forward-looking risk", "Diagnostics"])
 
 # ---------- Build today ----------
 with tabs[0]:
@@ -233,8 +260,61 @@ with tabs[3]:
         "The sweep is the argument to bring to a risk committee: the return given up per point of drawdown saved."
     )
 
-# ---------- Diagnostics ----------
+# ---------- Forward-looking risk ----------
 with tabs[4]:
+    with st.spinner("Racing correlation forecasts and testing five covariance matrices (about two minutes the first time)..."):
+        race_c, ew_s, mv_s, mv_bt, t0 = implied_risk(tickers, window, max_weight, cost_bps, offline)
+    st.markdown(
+        "**Question.** Every covariance matrix in this app is estimated on the past year, which assumes next month's correlation "
+        "will look like last year's. The option market publishes its own view every day, the CBOE one-month implied correlation "
+        "(COR1M). It carries a premium (about 12 points above what is realized, see the dispersion project) and is defined against "
+        "the index rather than as the average pairwise correlation of the names, so it is first turned into a forecast: an OLS "
+        "refitted each month on the previous five years only, mapping COR1M and last quarter's correlation to next month's."
+    )
+    sc = ic.forecast_scores(race_c)
+    m = st.columns(3)
+    m[0].metric("Forecast error, last year's correlation", f"{sc.loc['Last year (sample)', 'RMSE (pts)']:.1f} pts",
+                f"what the optimizer assumes, corr {sc.loc['Last year (sample)', 'corr with realized']:.2f}", delta_color="off")
+    m[1].metric("Forecast error, COR1M-based", f"{sc.loc[FORECAST, 'RMSE (pts)']:.1f} pts",
+                f"corr {sc.loc[FORECAST, 'corr with realized']:.2f} with realized", delta_color="off")
+    m[2].metric("Next month, forecast", f"{race_c[FORECAST].iloc[-1] * 100:.1f}%",
+                f"COR1M {race_c['COR1M raw'].iloc[-1] * 100:.1f}%, last quarter {race_c['Last quarter'].iloc[-1] * 100:.1f}%", delta_color="off")
+    st.plotly_chart(charts.corr_forecasts(race_c[race_c.index >= t0], ["Last year (sample)", "COR1M raw", FORECAST]), use_container_width=True)
+    st.dataframe(sc.style.format({"RMSE (pts)": "{:.1f}", "bias (pts)": "{:+.1f}", "corr with realized": "{:.2f}", "obs": "{:.0f}"}),
+                 use_container_width=True)
+    st.markdown(
+        "**Reading.** Last year's average correlation, the level built into every historical covariance matrix, is the worst "
+        "forecaster of next month's. Raw COR1M already tracks it better (it moves first, before a sell-off shows up in returns); "
+        "debiased and refitted on a rolling window it cuts the error by about a fifth."
+    )
+    st.subheader("Does the covariance forecast risk better?")
+    st.markdown(
+        "Five matrices, same vols, same history: only the correlation level differs. *LW, implied target* shrinks toward the "
+        "forecast instead of last year's average; *Implied level* keeps the Ledoit-Wolf structure (which names move together) and "
+        "moves its average correlation to the forecast. Each month the matrix forecasts the vol of a portfolio, which is then "
+        "compared with the vol realized over the next month. QLIKE is the standard loss for variance forecasts: lower is better."
+    )
+    fmt_s = {"forecast vol %": "{:.1f}", "realized vol %": "{:.1f}", "bias ratio": "{:.3f}", "QLIKE": "{:.3f}", "surprises > 1.5x, %": "{:.1f}"}
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Equal-weight basket** (same weights for all, pure risk forecast)")
+        st.dataframe(ew_s.style.format(fmt_s), use_container_width=True)
+    with c2:
+        st.markdown("**Min variance** (each matrix builds its own portfolio)")
+        st.dataframe(mv_s.style.format(fmt_s), use_container_width=True)
+    st.dataframe(mv_bt[["ann_return_%", "ann_vol_%", "sharpe", "max_dd_%", "worst_month_%", "avg_turnover_%"]].astype(float)
+                 .style.format("{:.2f}"), use_container_width=True)
+    st.markdown(
+        "**Reading.** Moving the correlation level to the option-implied forecast lowers the QLIKE loss by about 14% on both "
+        "portfolios: the matrix knows more about next month's risk. Plugging raw COR1M in instead gives the worst risk forecast "
+        "for min variance (its premium makes the matrix see risk that never shows up), even though that portfolio happens to "
+        "post the highest Sharpe here, within noise: the debiasing step is what makes the signal usable. The min-variance portfolio itself barely changes (realized vol within 0.1 point, Sharpe within 0.03): "
+        "its weights depend on which names are relatively cheap in risk, not on the average correlation level. The option market "
+        "helps size risk, not pick names."
+    )
+
+# ---------- Diagnostics ----------
+with tabs[5]:
     r_hist = bt.log_returns(px[list(tickers)]).iloc[-window:].dropna(axis=1)
     lw, delta = cv.ledoit_wolf_cov(r_hist)
     c1, c2, c3 = st.columns(3)

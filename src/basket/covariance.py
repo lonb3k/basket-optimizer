@@ -29,15 +29,18 @@ def ewma_cov(returns: pd.DataFrame, halflife: int = 63) -> pd.DataFrame:
     return pd.DataFrame(cov * ANN, index=returns.columns, columns=returns.columns)
 
 
-def ledoit_wolf_cov(returns: pd.DataFrame) -> tuple[pd.DataFrame, float]:
-    """Constant-correlation shrinkage. Returns (covariance, shrinkage intensity)."""
+def ledoit_wolf_cov(returns: pd.DataFrame, rbar_target: float | None = None) -> tuple[pd.DataFrame, float]:
+    """Constant-correlation shrinkage. Returns (covariance, shrinkage intensity).
+
+    `rbar_target` replaces the sample average correlation in the target (for instance a forecast built
+    from option prices); the analytical intensity is computed for that target."""
     x = returns.values - returns.values.mean(axis=0)
     t, n = x.shape
     s = x.T @ x / t
     var = np.diag(s)
     sd = np.sqrt(var)
     corr = s / np.outer(sd, sd)
-    rbar = (corr.sum() - n) / (n * (n - 1))
+    rbar = (corr.sum() - n) / (n * (n - 1)) if rbar_target is None else float(rbar_target)
     f = rbar * np.outer(sd, sd)
     np.fill_diagonal(f, var)
     # pi: asymptotic variance of the sample covariance entries

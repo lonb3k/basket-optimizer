@@ -20,7 +20,7 @@ same dates); comparisons with the index are not. RSP, the equal-weight S&P 500 E
 the honest equal-weight benchmark: it did about 12% a year over the backtest window against 26%
 for equal weight on today's survivors. The difference is the survivorship bias, measured.
 
-## Three results worth defending
+## Results worth defending
 
 **1. Vol targeting moves the Sharpe more than the choice of weights.**
 Six schemes (equal weight, inverse vol, min variance, risk parity, max diversification, HRP),
@@ -42,6 +42,23 @@ number runs in the thousands and an optimizer amplifies its noise into five-name
 Ledoit-Wolf shrinkage toward a constant-correlation target, with the analytical intensity,
 is why min variance here holds 30 names.
 
+**4. The option market forecasts next month's correlation better than last year does, and that helps size risk, not pick names.**
+Every covariance matrix built on a trailing year assumes next month's correlation will look like
+last year's. `implied_corr.py` races forecasts of next month's average pairwise correlation, out of
+sample, monthly since 2009. Last year's average, the level built into the sample and Ledoit-Wolf
+matrices, is the worst of seven (RMSE 17.3 points, correlation 0.33 with what is realized). A
+regression of next month's correlation on COR1M and last quarter's correlation, refitted each month
+on the previous five years only, is among the best (13.9 points, 0.56): COR1M moves before a
+sell-off shows up in returns, and the regression strips its premium.
+
+Moving the average correlation of the Ledoit-Wolf matrix to that forecast, with the same vols and
+the same structure, cuts the QLIKE loss of the risk forecast by 14% on an equal-weight basket
+(0.494 vs 0.575) and by 14% on min variance (0.552 vs 0.643). Plugging raw COR1M in without the
+debiasing step gives the worst min-variance risk forecast of all (0.840). The min-variance portfolio
+itself barely moves (realized vol 13.5% either way, Sharpe 1.09 vs 1.06): its weights depend on which
+names are relatively cheap in risk, not on the average correlation level. The option market tells
+you how much risk you hold, not which names to hold.
+
 ## What the app shows
 
 | Tab | Content |
@@ -50,6 +67,7 @@ is why min variance here holds 30 names.
 | **Race** | Six schemes walk-forward, net of costs, against SPY and RSP: return, vol, Sharpe, drawdown, worst month, turnover, cost drag, growth and drawdown charts, returns by year |
 | **Vol targeting** | Overlay at a chosen target and max leverage, forecast from trailing realized vol or VIX-scaled, Sharpe before and after per scheme, leverage path, drawdown comparison |
 | **Concentration** | Sweep of the Mag 7 weight cap: Sharpe, drawdown, worst month, effective number of bets, average Mag 7 weight |
+| **Forward-looking risk** | Out-of-sample race of correlation forecasts (last year, last quarter, raw COR1M, debiased COR1M regressions), risk-forecast accuracy of five covariance matrices on equal weight and min variance (bias ratio, QLIKE, surprises), min-variance walk-forward per matrix |
 | **Diagnostics** | Shrinkage intensity, condition numbers, clustered correlation heatmap |
 
 ## Decisions, and why
@@ -74,7 +92,7 @@ is why min variance here holds 30 names.
 .venv/bin/python -m pytest -q tests
 ```
 
-Eight tests: shrinkage intensity in [0, 1] with a positive-definite result; min variance matches
+Fourteen tests. The forward-looking covariance ones: the level shift hits its target, keeps the vols and stays positive definite; Ledoit-Wolf with its own sample average as external target is unchanged; tampering with every realized value from month k on leaves the forecasts up to k unchanged (no look-ahead); the risk forecast is unbiased on a stationary simulated market. The original eight: shrinkage intensity in [0, 1] with a positive-definite result; min variance matches
 the closed form on two uncorrelated assets; risk parity equalizes risk contributions; caps and
 group caps are respected by every solver; HRP sums to one and prefers low-vol names; effective
 number of bets hits its bounds; the simulation charges full turnover on the first allocation and
@@ -118,7 +136,8 @@ app.py                     Streamlit UI
 src/basket/
   universe.py              SPY holdings, sectors, Mag 7
   data.py                  prices and CBOE indices with CSV cache
-  covariance.py            sample, EWMA, Ledoit-Wolf constant-correlation shrinkage
+  covariance.py            sample, EWMA, Ledoit-Wolf constant-correlation shrinkage (optional external target)
+  implied_corr.py          COR1M-based correlation forecasts, implied-level covariance, risk-forecast tests
   optimizers.py            equal weight, inverse vol, min variance, risk parity, max diversification, HRP
   risk.py                  risk contributions, effective number of bets, clusters, tracking stats
   backtest.py              walk-forward weights, simulation with costs, vol-target overlay, stats
@@ -132,3 +151,4 @@ tests/
 - Historical constituents to remove the survivorship bias from the index comparison.
 - A long-short extension: the dispersion book from the companion project as an overlay.
 - Transaction-cost model by name (spread and ADV) instead of a flat bps.
+- Use the implied-level risk forecast in the vol-target overlay, where the level of risk is exactly what matters.

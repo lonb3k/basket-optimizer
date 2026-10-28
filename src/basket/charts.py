@@ -115,3 +115,14 @@ def sharpe_before_after(table: pd.DataFrame) -> go.Figure:
     fig.add_trace(go.Bar(x=table.index, y=table["sharpe_vt"], name="Vol-targeted", marker=dict(color=C["orange"], line=dict(width=0)), hovertemplate="%{y:.2f}"))
     fig.update_layout(barmode="group", bargap=0.3)
     return fig
+
+
+def corr_forecasts(race: pd.DataFrame, models: list[str]) -> go.Figure:
+    """Next-month average pairwise correlation: realized vs forecasts, out of sample."""
+    fig = _base("Average pairwise correlation next month: realized vs forecasts", height=400)
+    fig.add_trace(go.Scatter(x=race.index, y=race["realized_fwd"] * 100, name="Realized next month", mode="lines",
+                             line=dict(width=1.4, color=TEXT), hovertemplate="%{y:.1f}%"))
+    for i, m in enumerate(models):
+        fig.add_trace(go.Scatter(x=race.index, y=race[m] * 100, name=m, mode="lines",
+                                 line=dict(width=1.8, color=SERIES[i]), hovertemplate="%{y:.1f}%"))
+    return fig

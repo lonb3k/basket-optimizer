@@ -27,7 +27,8 @@ def log_returns(prices: pd.DataFrame) -> pd.DataFrame:
 def walk_forward_weights(returns: pd.DataFrame, method: str, estimator: str = "Ledoit-Wolf", window: int = 252,
                          rebalance: int = 21, max_weight: float = 0.1, group_caps=None, start: int | None = None) -> pd.DataFrame:
     """Target weights at each rebalance date (indexed by the date they take effect, i.e. next day)."""
-    fn, est = METHODS[method], ESTIMATORS[estimator]
+    fn = METHODS[method]
+    est = estimator if callable(estimator) else ESTIMATORS[estimator]  # a callable gets the trailing window
     rows, idx = [], []
     first = window if start is None else max(window, start)
     for end in range(first, len(returns), rebalance):
