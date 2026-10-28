@@ -4,6 +4,9 @@ Run:  streamlit run app.py
 """
 from __future__ import annotations
 
+import functools
+import hashlib
+import os
 import sys
 import warnings
 from pathlib import Path
@@ -21,6 +24,37 @@ from basket.universe import MAG7, load_weights, sector_of  # noqa: E402
 
 st.set_page_config(page_title="Basket Optimizer", page_icon="🧺", layout="wide")
 
+# Shared hosts get rate-limited by Yahoo, so there the app opens on the CSV mirrors committed to the repo.
+# Streamlit Community Cloud mounts the repo under /mount/src, Hugging Face Spaces sets SPACE_ID.
+HOSTED = (str(Path(__file__).resolve()).startswith("/mount/src/") or "SPACE_ID" in os.environ
+          or os.environ.get("OFFLINE_DEFAULT") == "1")
+
+# The walk-forward race and the cap sweep take one to two minutes. On offline data they are deterministic, so their
+# results are pickled to data/cache/, keyed on the arguments and the price file, and committed for the default settings:
+# the hosted app's cold start reads them instead of re-running the optimizers.
+CACHE_DIR = Path(__file__).parent / "data" / "cache"
+PRICES_FILE = Path(__file__).parent / "data" / "prices_2005-01-01.csv"
+
+
+def offline_disk_cache(fn):
+    @functools.wraps(fn)
+    def wrapper(*args):
+        if not args[-1] or not PRICES_FILE.exists():  # last argument is `offline`
+            return fn(*args)
+        sig = hashlib.sha1(PRICES_FILE.read_bytes()).hexdigest()
+        key = hashlib.sha1(repr((fn.__name__, args, sig)).encode()).hexdigest()[:16]
+        path = CACHE_DIR / f"{fn.__name__}_{key}.pkl"
+        if path.exists():
+            return pd.read_pickle(path)
+        out = fn(*args)
+        try:
+            CACHE_DIR.mkdir(exist_ok=True)
+            pd.to_pickle(out, path)
+        except OSError:  # read-only host
+            pass
+        return out
+    return wrapper
+
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
 def universe(top_n: int) -> pd.DataFrame:
@@ -35,6 +69,7 @@ def prices(tickers: tuple[str, ...], offline: bool) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
+@offline_disk_cache
 def race(tickers: tuple[str, ...], methods: tuple[str, ...], estimator: str, window: int, max_weight: float,
          mag7_cap: float, cost_bps: float, years: int, offline: bool):
     px = load_prices(list(tickers), start="2005-01-01", offline=offline)
@@ -45,6 +80,7 @@ def race(tickers: tuple[str, ...], methods: tuple[str, ...], estimator: str, win
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
+@offline_disk_cache
 def cap_sweep(tickers: tuple[str, ...], method: str, estimator: str, window: int, max_weight: float, cost_bps: float, years: int, offline: bool):
     px = load_prices(list(tickers), start="2005-01-01", offline=offline)
     r = bt.log_returns(px[list(tickers)])
@@ -75,7 +111,9 @@ with st.sidebar:
     mag7_cap = st.slider("Cap on Mag 7 total weight", 0.10, 1.0, 0.30, 0.05)
     cost_bps = st.slider("Cost per unit turnover (bps)", 0.0, 20.0, 5.0, 1.0)
     years = st.slider("Backtest years", 5, 18, 11)
-    offline = st.toggle("Offline", value=False)
+    offline = st.toggle("Offline", value=HOSTED, help="Off: live Yahoo prices. On: the CSV extracts in data/.")
+    if HOSTED and offline:
+        st.caption("Hosted demo: opens on the price snapshot committed to the repo. Switch offline off for live data.")
 
 w = universe(top_n)
 tickers = tuple(w["ticker"])
