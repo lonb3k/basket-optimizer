@@ -18,7 +18,7 @@ import pandas as pd
 import plotly.io as pio
 
 from . import backtest as bt, charts, covariance as cv, optimizers as opt, risk as rk
-from .data import load_cboe_index, load_prices
+from .data import load_cboe_index, load_prices, point_in_time_universe
 from .universe import MAG7, load_weights, sector_of
 
 REPO_URL = "https://github.com/lonb3k/basket-optimizer"
@@ -144,8 +144,11 @@ def build_sheet(offline: bool = False, top_n: int = 50, **overrides) -> dict:
     cond_sample, cond_lw = float(np.linalg.cond(cv.sample_cov(r_hist).values)), float(np.linalg.cond(lw.values))
 
     # ---------- the race and the overlay ----------
-    rets, stats_, wts = bt.run_race(r, list(opt.METHODS), p["estimator"], p["window"], 21, p["max_weight"], p["cost_bps"], caps,
-                                    start=len(r) - 252 * p["years"])
+    # the backtest runs on the point-in-time top N: only names that were then among the largest are eligible at each rebalance
+    pit_px, pit_w, _ = point_in_time_universe(offline=offline, top_n=top_n)
+    r_pit = bt.log_returns(pit_px)
+    rets, stats_, wts = bt.run_race(r_pit, list(opt.METHODS), p["estimator"], p["window"], 21, p["max_weight"], p["cost_bps"], caps,
+                                    start=len(r_pit) - 252 * p["years"], members=pit_w.reindex(r_pit.index))
     overlays = {m_: bt.vol_target_overlay(pd.DataFrame({"ret": rets[m_]}), p["target"], "realized", p["max_leverage"], p["cost_bps"], spy_ret, vix)
                 for m_ in rets.columns}
     table = pd.DataFrame(stats_).T.drop(columns=["name"]).astype(float)
@@ -213,8 +216,8 @@ def build_sheet(offline: bool = False, top_n: int = 50, **overrides) -> dict:
             f"{vt_tbl['maxdd_raw'].mean():.0f}% to {vt_tbl['maxdd_vt'].mean():.0f}%. The spread of Sharpe between the six schemes is "
             f"{table['sharpe'].drop(['SPY', 'RSP']).max() - table['sharpe'].drop(['SPY', 'RSP']).min():.2f}: the vol target moves the result more than the weights.",
             f"On {as_of.strftime('%d %b')} the basket returned {basket_1d:+.2f}% against {float(spy_ret.iloc[-1]*100):+.2f}% for SPY and {float(rsp_ret.iloc[-1]*100):+.2f}% for RSP, "
-            f"the equal-weight ETF that shows what equal weight did without survivorship ({table.loc['RSP', 'ann_return_%']:.0f}% a year over the window "
-            f"against {table.loc['Equal weight', 'ann_return_%']:.0f}% on today's survivors).",
+            f"the equal-weight S&P 500 ETF ({table.loc['RSP', 'ann_return_%']:.0f}% a year over the window against "
+            f"{table.loc['Equal weight', 'ann_return_%']:.0f}% for equal weight on the point-in-time top {top_n}).",
         ],
         "table": {"columns": ["Scheme", "Sharpe", "Sharpe vol-targeted", "Max DD %", "Max DD vol-targeted %", "Avg leverage"],
                   "rows": [[m_, _num(rw["sharpe_raw"], 2), _num(rw["sharpe_vt"], 2), _num(rw["maxdd_raw"], 1), _num(rw["maxdd_vt"], 1), _num(rw["avg_leverage"], 2)]
@@ -251,7 +254,7 @@ def build_sheet(offline: bool = False, top_n: int = 50, **overrides) -> dict:
                     "Same weights without the overlay: {exp:+.2f}% over the following month in this regime ({pos:.0f}% positive, worst {worst:+.1f}%)."),
         conditional(rets["Equal weight"], "Equal weight, unlevered", f"{len(wt)} names at {100/len(wt):.0f}% each, rebalanced monthly",
                     "The naive basket: {exp:+.2f}% over the following month in this regime ({pos:.0f}% positive, worst {worst:+.1f}%). "
-                    "Remember RSP: equal weight on today's survivors overstates what equal weight actually paid."),
+                    "Backtests use a point-in-time universe: on today's survivors equal weight would have made about 26% a year instead of 15%."),
         conditional(rets["Min variance"], "Min variance, unlevered", f"the quietest {int((wts['Min variance'].iloc[-1] > 1e-4).sum())} names, highest turnover",
                     "The defensive basket: {exp:+.2f}% over the following month in this regime ({pos:.0f}% positive, worst {worst:+.1f}%)."),
     ]
@@ -286,7 +289,7 @@ def build_sheet(offline: bool = False, top_n: int = 50, **overrides) -> dict:
         "method": "Ideas are the baskets to hold this month, ranked by historical conditional expectation (next 21 days) divided by the historical "
                   "worst case in the same regime. Conditioning variable: the quartile of the basket's trailing 22-day realized vol.",
         "caveats": [
-            "Survivorship: today's top-50 are the winners of the last decade, so every basket beats SPY. Compare schemes with each other, not with the index. RSP is the honest equal-weight benchmark.",
+            "Point-in-time universe: monthly top N by today's float shares times that month's price; share-count changes and names delisted since are not captured. Today's basket (first section) uses today's names.",
             "Conditional returns are averages over overlapping 21-day windows; they describe the regime, not a forecast.",
             "Costs: 5 bps per unit of turnover, including leverage changes. No financing cost on leverage above 1.",
         ],

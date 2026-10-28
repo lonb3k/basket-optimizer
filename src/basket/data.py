@@ -90,3 +90,42 @@ def next_earnings(ticker: str) -> pd.Timestamp | None:
     except Exception:
         return None
     return None
+
+
+def load_pit_prices(tickers: list[str], start: str = "2005-01-01", offline: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split-adjusted closes (for market caps) and total-return closes (for returns) of the candidate universe,
+    mirrored to data/pit_close.csv.gz and data/pit_adj.csv.gz."""
+    from .universe import PIT_ADJ, PIT_CLOSE
+
+    def cached():
+        return (pd.read_csv(PIT_CLOSE, index_col=0, parse_dates=True), pd.read_csv(PIT_ADJ, index_col=0, parse_dates=True))
+
+    if offline and PIT_CLOSE.exists() and PIT_ADJ.exists():
+        return cached()
+    try:
+        raw = yf.download(tickers, start=start, auto_adjust=False, progress=False, threads=True)
+        close, adj = raw["Close"].dropna(how="all"), raw["Adj Close"].dropna(how="all")
+        if len(close) < 1000 or close.shape[1] < 0.9 * len(tickers):
+            raise ValueError("incomplete download")
+    except Exception:  # rate-limited or offline: fall back to the committed mirror
+        if PIT_CLOSE.exists() and PIT_ADJ.exists():
+            return cached()
+        raise
+    for df in (close, adj):
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        df.index.name = "Date"
+    close.round(4).to_csv(PIT_CLOSE)
+    adj.round(4).to_csv(PIT_ADJ)
+    return close, adj
+
+
+def point_in_time_universe(offline: bool = False, top_n: int = 50) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    """Returns of the candidate universe, approximate point-in-time top-N weights and SPY, ready for
+    `realized_correlation_history` and `decomposition.decompose`. Returns (prices, weights, spy), prices
+    total-return adjusted. See `universe.point_in_time_weights` for how membership is approximated."""
+    from .universe import PIT_SHARES, load_candidates, point_in_time_weights
+    shares = (pd.read_csv(PIT_SHARES) if PIT_SHARES.exists() else load_candidates()).set_index("ticker")["shares"]
+    close, adj = load_pit_prices(list(shares.index) + ["SPY"], offline=offline)
+    spy = adj["SPY"]
+    close, adj = close.drop(columns=["SPY"], errors="ignore"), adj.drop(columns=["SPY"], errors="ignore")
+    return adj, point_in_time_weights(close, shares, top_n), spy

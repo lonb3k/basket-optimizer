@@ -12,29 +12,46 @@ but "which decision actually moves the Sharpe": the weights, the vol target, or 
 Third project in the series after the [volatility dashboard](https://github.com/lonb3k/vol-dashboard)
 and the [dispersion](https://github.com/lonb3k/dispersion) study, on the same universe and data.
 
-## Survivorship, stated upfront
+## Survivorship, handled
 
-Today's top 50 are the winners of the last decade. Every basket built on them beats SPY by a
-wide margin, and that gap is not alpha. Comparisons *between* schemes are fair (same universe,
-same dates); comparisons with the index are not. RSP, the equal-weight S&P 500 ETF, is shown as
-the honest equal-weight benchmark: it did about 12% a year over the backtest window against 26%
-for equal weight on today's survivors. The difference is the survivorship bias, measured.
+Today's top 50 are the winners of the last decade: backtest any basket on them and it crushes
+SPY. The backtests here run on a point-in-time universe instead. At each monthly rebalance, only
+the names that were then among the 50 largest are eligible, by today's float-adjusted share count
+(from the SPY holdings file) times that month's split-adjusted price; 95 different names enter the
+equal-weight basket over 2015-2026. Known gaps: share counts move (buybacks, dilution) and names
+delisted since cannot enter. The sidebar switches back to the fixed basket to show the bias.
+
+| Oct 2015 to Oct 2026, net of costs | Today's top 50 | Point-in-time top 50 | SPY | RSP |
+|---|---|---|---|---|
+| Equal weight, annual return | 26.1% | 15.4% | 14.7% | 11.7% |
+| Equal weight, Sharpe | 1.31 | 0.92 | 0.87 | 0.70 |
+
+Ten points of return a year were survivorship. Point in time, equal weight on the largest names
+roughly matched the cap-weighted index.
 
 ## Results worth defending
 
-**1. Vol targeting moves the Sharpe more than the choice of weights.**
+**1. Vol targeting moves the result more than the choice of weights.**
 Six schemes (equal weight, inverse vol, min variance, risk parity, max diversification, HRP),
-walk-forward since 2015 with Ledoit-Wolf covariance, monthly rebalancing and 5 bps per unit of
-turnover: the spread of Sharpe ratios between them is about 0.4. A 10% vol target on top of any
-of them adds about 0.2 of Sharpe and cuts the worst drawdown from 30% to 13%. Vol clusters and
-spikes before the worst returns, so de-levering on rising realized vol sidesteps part of every
-crash. That is the mechanism, and it is worth more than the optimizer.
+walk-forward since October 2015 on the point-in-time top 50, Ledoit-Wolf covariance, monthly
+rebalancing, 5 bps per unit of turnover. Their Sharpe ratios span 0.81 to 0.96. A 10% vol target
+on top of any of them adds about 0.2 of Sharpe and halves the worst drawdown:
+
+| Point-in-time top 50 | Sharpe raw / vol-targeted | Max drawdown raw / vol-targeted |
+|---|---|---|
+| Equal weight | 0.92 / 1.06 | −32% / −16% |
+| Min variance | 0.81 / 1.02 | −28% / −17% |
+| Average of the six schemes | +0.20 Sharpe | −31% / −15% |
+
+Vol clusters and spikes before the worst returns, so de-levering on rising realized vol sidesteps
+part of every crash. That result survives the survivorship correction almost unchanged (on today's
+names: −32% to −13%), the absolute returns do not.
 
 **2. Weight is not risk.**
-On this universe the Mag 7 are 54% of the cap weight and 66% of the variance. Risk-based schemes
-hold them at 12-16% because they are the most volatile names, so a 30% cap on Mag 7 weight costs
-those schemes nothing. The app reports the effective number of bets (entropy of risk
-contributions): about 30 for equal weight, 48 for risk parity, under 10 for cap weight.
+On today's universe the Mag 7 are 54% of the cap weight and 66% of the variance. Risk-based schemes
+hold them at about 11% because they are the most volatile names, so a cap on Mag 7 weight binds only
+below 15% and costs those schemes nothing above it. The app reports the effective number of bets
+(entropy of risk contributions): about 30 for equal weight, 48 for risk parity, under 10 for cap weight.
 
 **3. The covariance matrix is the product.**
 50 names on 252 days is 1275 parameters for 252 observations. The sample matrix's condition
@@ -44,18 +61,18 @@ is why min variance here holds 30 names.
 
 **4. The option market forecasts next month's correlation better than last year does, and that helps size risk, not pick names.**
 Every covariance matrix built on a trailing year assumes next month's correlation will look like
-last year's. `implied_corr.py` races forecasts of next month's average pairwise correlation, out of
-sample, monthly since 2009. Last year's average, the level built into the sample and Ledoit-Wolf
-matrices, is the worst of seven (RMSE 17.3 points, correlation 0.33 with what is realized). A
-regression of next month's correlation on COR1M and last quarter's correlation, refitted each month
-on the previous five years only, is among the best (13.9 points, 0.56): COR1M moves before a
-sell-off shows up in returns, and the regression strips its premium.
+last year's. `implied_corr.py` races forecasts of next month's average pairwise correlation of the
+point-in-time top 50, out of sample, monthly since 2009. Last year's average, the level built into
+the sample and Ledoit-Wolf matrices, is the worst of seven (RMSE 18.0 points, correlation 0.36 with
+what is realized). A regression of next month's correlation on COR1M and last quarter's correlation,
+refitted each month on the previous five years only, cuts the error by a fifth (14.3 points, 0.57):
+COR1M moves before a sell-off shows up in returns, and the regression strips its premium.
 
 Moving the average correlation of the Ledoit-Wolf matrix to that forecast, with the same vols and
-the same structure, cuts the QLIKE loss of the risk forecast by 14% on an equal-weight basket
-(0.494 vs 0.575) and by 14% on min variance (0.552 vs 0.643). Plugging raw COR1M in without the
-debiasing step gives the worst min-variance risk forecast of all (0.840). The min-variance portfolio
-itself barely moves (realized vol 13.5% either way, Sharpe 1.09 vs 1.06): its weights depend on which
+the same structure, cuts the QLIKE loss of the risk forecast by 15% on an equal-weight basket
+(0.573 vs 0.674) and by 12% on min variance (0.591 vs 0.674). Plugging raw COR1M in without the
+debiasing step gives the worst min-variance risk forecast of all (0.743). The min-variance portfolio
+itself barely moves (realized vol 12.9% vs 12.8%, Sharpe 0.83 vs 0.84): its weights depend on which
 names are relatively cheap in risk, not on the average correlation level. The option market tells
 you how much risk you hold, not which names to hold.
 
@@ -148,7 +165,7 @@ tests/
 
 ## Next
 
-- Historical constituents to remove the survivorship bias from the index comparison.
+- Historical share counts, to refine the point-in-time membership (buybacks and dilution).
 - A long-short extension: the dispersion book from the companion project as an overlay.
 - Transaction-cost model by name (spread and ADV) instead of a flat bps.
 - Use the implied-level risk forecast in the vol-target overlay, where the level of risk is exactly what matters.

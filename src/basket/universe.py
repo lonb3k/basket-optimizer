@@ -80,3 +80,50 @@ def sector_of(ticker: str) -> str:
         return s or "Other"
     except Exception:
         return "Other"
+
+
+PIT_CLOSE = DATA_DIR / "pit_close.csv.gz"   # split-adjusted, not dividend-adjusted: for market caps
+PIT_ADJ = DATA_DIR / "pit_adj.csv.gz"       # total-return adjusted: for returns
+PIT_SHARES = DATA_DIR / "pit_shares.csv"
+
+
+def load_candidates(n: int = 250) -> pd.DataFrame:
+    """The `n` largest names in SPY today with the shares SPY holds (proportional to float-adjusted index shares)."""
+    path = download_holdings()
+    raw = pd.read_excel(path, header=None)
+    hdr = raw.index[raw.apply(lambda r: r.astype(str).str.strip().eq("Ticker").any(), axis=1)][0]
+    df = pd.read_excel(path, header=hdr)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df[["Ticker", "Weight", "Shares Held"]].dropna()
+    df = df[df["Ticker"].astype(str).str.match(r"^[A-Z.]+$")]
+    df["Weight"] = pd.to_numeric(df["Weight"], errors="coerce")
+    df = df.dropna().sort_values("Weight", ascending=False).head(n)
+    df["ticker"] = df["Ticker"].map(lambda t: YAHOO_FIX.get(t, t))
+    out = df.rename(columns={"Shares Held": "shares"})[["ticker", "shares"]].reset_index(drop=True)
+    out.to_csv(PIT_SHARES, index=False)
+    return out
+
+
+def point_in_time_weights(close: pd.DataFrame, shares: pd.Series, top_n: int = 50, freq: str = "ME") -> pd.DataFrame:
+    """Approximate point-in-time top-N membership and weights, reset at each month end.
+
+    Market cap on date t is proxied by today's float-adjusted share count times the split-adjusted
+    (not dividend-adjusted) close on t. Two known gaps: share counts move with buybacks and issuance
+    (heavy buyers such as Apple look smaller in the past than they were), and names delisted since
+    (Celgene, EMC, Monsanto...) have no Yahoo prices and cannot enter. Returns daily weights (rows sum to
+    one, zero outside the top N), forward-filled from each month end to the next.
+    """
+    sh = shares.reindex(close.columns)
+    cap = close.mul(sh, axis=1)
+    month_ends = cap.resample(freq).last().index
+    rows = {}
+    for d in month_ends:
+        c = cap.loc[:d].iloc[-1] if not cap.loc[:d].empty else None
+        if c is None:
+            continue
+        top = c.dropna().nlargest(top_n)
+        rows[cap.loc[:d].index[-1]] = top / top.sum()
+    w = pd.DataFrame(rows).T.reindex(columns=close.columns).fillna(0.0)
+    # weights decided at a month end apply from the next trading day
+    w = w.reindex(close.index).shift(1).ffill().fillna(0.0)
+    return w

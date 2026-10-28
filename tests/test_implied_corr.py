@@ -55,3 +55,17 @@ def test_risk_forecast_is_unbiased_on_a_stationary_market():
     test = ic.risk_forecast_test(r, {"Sample": cv.sample_cov}, lambda h: pd.Series(1 / h.shape[1], index=h.columns))
     sc = ic.risk_scores(test)
     assert 0.9 < sc.loc["Sample", "bias ratio"] < 1.1
+
+
+def test_walk_forward_only_holds_point_in_time_members():
+    from basket import backtest as bt
+    r = _returns(n_days=600)
+    members = pd.DataFrame(0.0, index=r.index, columns=r.columns)
+    members.loc[:, ["S0", "S1", "S2", "S3", "S4"]] = 1.0         # five names (the backtest needs at least five)
+    members.loc[r.index[400]:, "S5"] = 1.0                      # S5 joins the universe on day 400
+    tw = bt.walk_forward_weights(r, "Equal weight", "Ledoit-Wolf", 252, 21, 1.0, None, None, members)
+    before = tw[tw.index <= r.index[400]]
+    after = tw[tw.index > r.index[401]]
+    assert len(before) > 0 and (before[["S5", "S6", "S7"]] == 0).all().all()
+    assert (after["S5"] > 0).all() and (after[["S6", "S7"]] == 0).all().all()
+    assert np.allclose(tw.sum(axis=1), 1.0)

@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from basket import backtest as bt, charts, covariance as cv, implied_corr as ic, optimizers as opt, risk as rk  # noqa: E402
-from basket.data import load_cboe_index, load_prices  # noqa: E402
+from basket.data import load_cboe_index, load_prices, point_in_time_universe  # noqa: E402
 from basket.universe import MAG7, load_weights, sector_of  # noqa: E402
 
 st.set_page_config(page_title="Basket Optimizer", page_icon="🧺", layout="wide")
@@ -34,6 +34,17 @@ HOSTED = (str(Path(__file__).resolve()).startswith("/mount/src/") or "SPACE_ID" 
 # the hosted app's cold start reads them instead of re-running the optimizers.
 CACHE_DIR = Path(__file__).parent / "data" / "cache"
 PRICES_FILE = Path(__file__).parent / "data" / "prices_2005-01-01.csv"
+PIT_FILE = Path(__file__).parent / "data" / "pit_adj.csv.gz"
+
+
+def returns_and_members(tickers: tuple[str, ...], pit: bool, offline: bool):
+    """Log returns of the backtest universe and its point-in-time membership (None for the fixed basket of today's names)."""
+    if pit:
+        P, W, _ = point_in_time_universe(offline=offline, top_n=len(tickers))
+        r = bt.log_returns(P)
+        return r, W.reindex(r.index)
+    px = load_prices(list(tickers), start="2005-01-01", offline=offline)
+    return bt.log_returns(px[list(tickers)]), None
 
 
 def offline_disk_cache(fn):
@@ -41,7 +52,7 @@ def offline_disk_cache(fn):
     def wrapper(*args):
         if not args[-1] or not PRICES_FILE.exists():  # last argument is `offline`
             return fn(*args)
-        sig = hashlib.sha1(PRICES_FILE.read_bytes()).hexdigest()
+        sig = hashlib.sha1(PRICES_FILE.read_bytes() + (PIT_FILE.read_bytes() if PIT_FILE.exists() else b"")).hexdigest()
         key = hashlib.sha1(repr((fn.__name__, args, sig)).encode()).hexdigest()[:16]
         path = CACHE_DIR / f"{fn.__name__}_{key}.pkl"
         if path.exists():
@@ -71,23 +82,23 @@ def prices(tickers: tuple[str, ...], offline: bool) -> pd.DataFrame:
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 @offline_disk_cache
 def race(tickers: tuple[str, ...], methods: tuple[str, ...], estimator: str, window: int, max_weight: float,
-         mag7_cap: float, cost_bps: float, years: int, offline: bool):
-    px = load_prices(list(tickers), start="2005-01-01", offline=offline)
-    r = bt.log_returns(px[list(tickers)])
+         mag7_cap: float, cost_bps: float, years: int, pit: bool, offline: bool):
+    r, members = returns_and_members(tickers, pit, offline)
     caps = {"mag7": (MAG7, mag7_cap)} if mag7_cap < 1 else None
-    rets, stats_, wts = bt.run_race(r, list(methods), estimator, window, 21, max_weight, cost_bps, caps, start=len(r) - 252 * years)
+    rets, stats_, wts = bt.run_race(r, list(methods), estimator, window, 21, max_weight, cost_bps, caps,
+                                    start=len(r) - 252 * years, members=members)
     return rets, stats_, wts
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 @offline_disk_cache
-def cap_sweep(tickers: tuple[str, ...], method: str, estimator: str, window: int, max_weight: float, cost_bps: float, years: int, offline: bool):
-    px = load_prices(list(tickers), start="2005-01-01", offline=offline)
-    r = bt.log_returns(px[list(tickers)])
+def cap_sweep(tickers: tuple[str, ...], method: str, estimator: str, window: int, max_weight: float, cost_bps: float, years: int,
+              pit: bool, offline: bool):
+    r, members = returns_and_members(tickers, pit, offline)
     rows = []
     for cap in (0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 1.0):
         caps = {"mag7": (MAG7, cap)} if cap < 1 else None
-        tw = bt.walk_forward_weights(r, method, estimator, window, 21, max_weight, caps, start=len(r) - 252 * years)
+        tw = bt.walk_forward_weights(r, method, estimator, window, 21, max_weight, caps, start=len(r) - 252 * years, members=members)
         sim = bt.simulate(r, tw, cost_bps)
         s = bt.stats(sim["ret"])
         enb = np.mean([rk.effective_number_of_bets(rk.risk_contributions(tw.loc[d], cv.ESTIMATORS[estimator](r.loc[:d].iloc[-window:].dropna(axis=1))))
@@ -102,22 +113,24 @@ FORECAST = "COR1M + last quarter, 5y rolling"
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 @offline_disk_cache
-def implied_risk(tickers: tuple[str, ...], window: int, max_weight: float, cost_bps: float, offline: bool):
+def implied_risk(tickers: tuple[str, ...], window: int, max_weight: float, cost_bps: float, pit: bool, offline: bool):
     """Correlation forecast race, risk-forecast tests and min-variance walk-forward per covariance estimator."""
-    px = load_prices(list(tickers), start="2005-01-01", offline=offline)
-    r = bt.log_returns(px[list(tickers)]).iloc[1:]
+    r, members = returns_and_members(tickers, pit, offline)
+    r = r.iloc[1:]
+    members = None if members is None else members.reindex(r.index)
     cor = load_cboe_index("COR1M", offline=offline)
-    race = ic.forecast_race(ic.correlation_panel(r, cor, first=window))
+    race = ic.forecast_race(ic.correlation_panel(r, cor, first=window, members=members))
     fc = race[FORECAST]
     start = int(np.searchsorted(r.index, fc.dropna().index[0])) + 1
     ests = {"Sample": cv.sample_cov, "Ledoit-Wolf": lambda h: cv.ledoit_wolf_cov(h)[0], **ic.implied_estimators(fc),
             "Implied level, raw COR1M": ic.implied_estimators(cor / 100)["Implied level"]}
-    ew = ic.risk_scores(ic.risk_forecast_test(r, ests, lambda h: pd.Series(1 / h.shape[1], index=h.columns), window, start=start))
+    ew = ic.risk_scores(ic.risk_forecast_test(r, ests, lambda h: pd.Series(1 / h.shape[1], index=h.columns), window, start=start,
+                                              members=members))
     mv = ic.risk_scores(ic.risk_forecast_test(r, ests, lambda c: opt.min_variance(c, max_weight=max_weight), window,
-                                              start=start, own_weights=True))
+                                              start=start, own_weights=True, members=members))
     rows = {}
     for name, est in ests.items():
-        sim = bt.simulate(r, bt.walk_forward_weights(r, "Min variance", est, window, 21, max_weight, None, start), cost_bps)
+        sim = bt.simulate(r, bt.walk_forward_weights(r, "Min variance", est, window, 21, max_weight, None, start, members), cost_bps)
         s = bt.stats(sim["ret"], name)
         s["avg_turnover_%"] = float(sim.loc[sim["turnover"] > 0, "turnover"].mean() * 100)
         rows[name] = s
@@ -138,6 +151,10 @@ with st.sidebar:
     mag7_cap = st.slider("Cap on Mag 7 total weight", 0.10, 1.0, 0.30, 0.05)
     cost_bps = st.slider("Cost per unit turnover (bps)", 0.0, 20.0, 5.0, 1.0)
     years = st.slider("Backtest years", 5, 18, 11)
+    universe_mode = st.radio("Backtest universe", ["Point-in-time top N", "Today's top N (survivorship bias)"], 0,
+                             help="Point in time: at each rebalance, only the N largest names of that month are eligible (today's float "
+                                  "shares times that month's price). Today's top N: the naive fixed basket of today's winners, kept to show the bias.")
+    pit = universe_mode.startswith("Point")
     offline = st.toggle("Offline", value=HOSTED, help="Off: live Yahoo prices. On: the CSV extracts in data/.")
     if HOSTED and offline:
         st.caption("Hosted demo: opens on the price snapshot committed to the repo. Switch offline off for live data.")
@@ -149,9 +166,13 @@ caps = {"mag7": (MAG7, mag7_cap)} if mag7_cap < 1 else None
 
 st.title("Where does a basket's performance come from?")
 st.caption(f"{top_n} largest S&P 500 names, {w['index_weight'].sum()*100:.0f}% of the index. Last price {px.index[-1].date()}.")
-st.warning("**Survivorship, stated upfront.** Today's top 50 are the winners of the last decade, so every basket built on them beats SPY. "
-           "Comparisons between schemes are fair (same universe); comparisons with the index are not. RSP (equal-weight S&P 500 ETF) is "
-           "shown as the honest equal-weight benchmark without survivorship.", icon="⚠️")
+if pit:
+    st.info("**Survivorship, handled.** Backtests run on a point-in-time universe: at each monthly rebalance only the names that were then "
+            "among the largest are eligible (today's float shares times that month's price; names delisted since cannot enter). On today's "
+            "winners equal weight made 26% a year since 2015; point in time it made 15%, next to SPY's 15%. *Build today* uses today's names.", icon="ℹ️")
+else:
+    st.warning("**Survivorship bias on.** This mode backtests today's top names, the winners of the last decade, as if they had been chosen "
+               "back then. Every basket built on them beats SPY. Switch the sidebar back to point in time.", icon="⚠️")
 
 tabs = st.tabs(["Build today", "Race", "Vol targeting", "Concentration", "Forward-looking risk", "Diagnostics"])
 
@@ -187,7 +208,7 @@ with tabs[0]:
 # ---------- Race ----------
 with tabs[1]:
     with st.spinner("Walk-forward backtest of six schemes..."):
-        rets, stats_, wts = race(tickers, tuple(opt.METHODS), estimator, window, max_weight, mag7_cap, cost_bps, years, offline)
+        rets, stats_, wts = race(tickers, tuple(opt.METHODS), estimator, window, max_weight, mag7_cap, cost_bps, years, pit, offline)
     bench = (np.exp(bt.log_returns(px[["SPY", "RSP"]])) - 1).reindex(rets.index)
     allr = pd.concat([rets, bench], axis=1)
     table = pd.DataFrame(stats_).T.drop(columns=["name"])
@@ -201,10 +222,14 @@ with tabs[1]:
     c2.plotly_chart(charts.drawdowns(allr, "Drawdowns"), use_container_width=True)
     best = table["sharpe"].drop(["SPY", "RSP"]).idxmax()
     st.markdown(
-        f"**Reading the race.** Best Sharpe among the schemes: **{best}**. The spread between the six schemes is small next to the gap between "
-        "any of them and the cap-weighted index: on this universe the choice of risk-based weights matters less than the decision not to "
-        "cap-weight. Min variance has the lowest vol and the highest turnover (it chases the quietest names), HRP and risk parity get most of "
-        "the diversification at a fraction of the trading. RSP shows what equal weight did without survivorship: the honest number."
+        f"**Reading the race.** Best Sharpe among the schemes: **{best}**. The six schemes span a Sharpe of "
+        f"{table['sharpe'].drop(['SPY', 'RSP']).min():.2f} to {table['sharpe'].drop(['SPY', 'RSP']).max():.2f}, against "
+        f"{table.loc['SPY', 'sharpe']:.2f} for SPY. "
+        + ("Point in time, risk-based weights on the largest names roughly match the cap-weighted index: the choice of weights is not "
+           "where the performance comes from. " if pit else
+           "On today's survivors every scheme seems to crush the index: that gap is survivorship, not skill. ")
+        + "Min variance has the lowest vol and the highest turnover (it chases the quietest names), HRP and risk parity get most of "
+        "the diversification at a fraction of the trading. RSP is equal weight across all 500 names, a broader and smaller-cap version of the same idea."
     )
     by_year = allr.groupby(allr.index.year).apply(lambda d: (1 + d).prod() - 1) * 100
     with st.expander("Returns by year, %"):
@@ -213,7 +238,7 @@ with tabs[1]:
 # ---------- Vol targeting ----------
 with tabs[2]:
     with st.spinner("Overlays..."):
-        rets, stats_, wts = race(tickers, tuple(opt.METHODS), estimator, window, max_weight, mag7_cap, cost_bps, years, offline)
+        rets, stats_, wts = race(tickers, tuple(opt.METHODS), estimator, window, max_weight, mag7_cap, cost_bps, years, pit, offline)
     target = st.slider("Vol target", 0.05, 0.20, 0.10, 0.01)
     max_lev = st.slider("Max leverage", 1.0, 3.0, 2.0, 0.25)
     forecast = st.radio("Vol forecast", ["realized", "vix_scaled"], horizontal=True, format_func=lambda s: {"realized": "Trailing 22d realized", "vix_scaled": "Realized × VIX / index realized"}[s])
@@ -249,21 +274,21 @@ with tabs[2]:
 with tabs[3]:
     m_sw = st.selectbox("Scheme for the sweep", list(opt.METHODS), 3, key="sweep")
     with st.spinner("Sweeping the Mag 7 cap..."):
-        sweep = cap_sweep(tickers, m_sw, estimator, window, max_weight, cost_bps, years, offline)
+        sweep = cap_sweep(tickers, m_sw, estimator, window, max_weight, cost_bps, years, pit, offline)
     c1, c2 = st.columns(2)
     c1.plotly_chart(charts.sweep_lines(sweep, "mag7_cap", ["Sharpe"], "Sharpe vs cap on Mag 7 weight"), use_container_width=True)
     c2.plotly_chart(charts.sweep_lines(sweep, "mag7_cap", ["Max drawdown %", "Worst month %"], "Tail vs cap on Mag 7 weight", "%"), use_container_width=True)
     st.dataframe(sweep.round(2), use_container_width=True)
     st.markdown(
         "**What a concentration limit costs.** The cap binds only when the scheme wants more Mag 7 than allowed (cap-weighting would hold 54%). "
-        "Risk-based schemes already hold 12-16% because the giants are the most volatile names, so a 30% cap costs them nothing. "
+        "Risk-based schemes already hold about 11% because the giants are the most volatile names, so a cap above 15% costs them nothing. "
         "The sweep is the argument to bring to a risk committee: the return given up per point of drawdown saved."
     )
 
 # ---------- Forward-looking risk ----------
 with tabs[4]:
     with st.spinner("Racing correlation forecasts and testing five covariance matrices (about two minutes the first time)..."):
-        race_c, ew_s, mv_s, mv_bt, t0 = implied_risk(tickers, window, max_weight, cost_bps, offline)
+        race_c, ew_s, mv_s, mv_bt, t0 = implied_risk(tickers, window, max_weight, cost_bps, pit, offline)
     st.markdown(
         "**Question.** Every covariance matrix in this app is estimated on the past year, which assumes next month's correlation "
         "will look like last year's. The option market publishes its own view every day, the CBOE one-month implied correlation "
@@ -305,10 +330,10 @@ with tabs[4]:
     st.dataframe(mv_bt[["ann_return_%", "ann_vol_%", "sharpe", "max_dd_%", "worst_month_%", "avg_turnover_%"]].astype(float)
                  .style.format("{:.2f}"), use_container_width=True)
     st.markdown(
-        "**Reading.** Moving the correlation level to the option-implied forecast lowers the QLIKE loss by about 14% on both "
+        "**Reading.** Moving the correlation level to the option-implied forecast lowers the QLIKE loss by 12% to 15% on both "
         "portfolios: the matrix knows more about next month's risk. Plugging raw COR1M in instead gives the worst risk forecast "
-        "for min variance (its premium makes the matrix see risk that never shows up), even though that portfolio happens to "
-        "post the highest Sharpe here, within noise: the debiasing step is what makes the signal usable. The min-variance portfolio itself barely changes (realized vol within 0.1 point, Sharpe within 0.03): "
+        "for min variance (its premium makes the matrix see risk that never shows up), while its Sharpe stays within noise of the "
+        "others: the debiasing step is what makes the signal usable. The min-variance portfolio itself barely changes (realized vol and Sharpe within noise of Ledoit-Wolf): "
         "its weights depend on which names are relatively cheap in risk, not on the average correlation level. The option market "
         "helps size risk, not pick names."
     )

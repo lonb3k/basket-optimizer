@@ -21,6 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .backtest import members_at
 from .covariance import ANN, ledoit_wolf_cov
 
 
@@ -35,14 +36,18 @@ def avg_pairwise_corr(returns: pd.DataFrame) -> float:
 
 
 def correlation_panel(returns: pd.DataFrame, cor: pd.Series, rebalance: int = 21, horizon: int = 21,
-                      windows=(21, 63, 252), first: int = 252) -> pd.DataFrame:
+                      windows=(21, 63, 252), first: int = 252, members: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per rebalance date t: trailing average pairwise correlations, COR1M at t (as a fraction),
     and the realized average pairwise correlation over the next `horizon` days (t+1 .. t+horizon),
     computed on the names that have a full trailing window at t."""
     rows = []
     cor = cor.reindex(returns.index).ffill() / 100
     for end in range(first, len(returns), rebalance):
-        names = returns.iloc[end - max(windows):end].dropna(axis=1, how="any").columns
+        block = returns.iloc[end - max(windows):end]
+        eligible = members_at(members, returns.index[end - 1])
+        if eligible is not None:
+            block = block[[c for c in eligible if c in block.columns]]
+        names = block.dropna(axis=1, how="any").columns
         if len(names) < 5:
             continue
         row = {"date": returns.index[end - 1], "cor1m": cor.iloc[end - 1], "n": len(names)}
@@ -145,7 +150,7 @@ def implied_estimators(rho_hat: pd.Series) -> dict:
 
 def risk_forecast_test(returns: pd.DataFrame, estimators: dict, weights_fn, window: int = 252,
                        rebalance: int = 21, horizon: int = 21, start: int | None = None,
-                       own_weights: bool = False) -> pd.DataFrame:
+                       own_weights: bool = False, members: pd.DataFrame | None = None) -> pd.DataFrame:
     """At each rebalance date: forecast the vol of a portfolio with each estimator, then measure the vol
     it realizes over the next `horizon` days. With `own_weights=False`, `weights_fn(hist)` gives one
     portfolio for all estimators (e.g. equal weight), so only the risk forecast differs. With
@@ -154,7 +159,11 @@ def risk_forecast_test(returns: pd.DataFrame, estimators: dict, weights_fn, wind
     rows = []
     first = window if start is None else max(window, start)
     for end in range(first, len(returns) - horizon, rebalance):
-        hist = returns.iloc[end - window:end].dropna(axis=1, how="any")
+        hist = returns.iloc[end - window:end]
+        eligible = members_at(members, returns.index[end - 1])
+        if eligible is not None:
+            hist = hist[[c for c in eligible if c in hist.columns]]
+        hist = hist.dropna(axis=1, how="any")
         if hist.shape[1] < 5:
             continue
         fwd = returns[hist.columns].iloc[end:end + horizon].fillna(0)

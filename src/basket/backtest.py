@@ -24,15 +24,35 @@ def log_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return np.log(prices / prices.shift(1))
 
 
+def members_at(members: pd.DataFrame | None, date: pd.Timestamp) -> list[str] | None:
+    """Names in the universe on `date` (positive weight in a point-in-time membership frame), or None for no restriction."""
+    if members is None:
+        return None
+    row = members.loc[:date]
+    if row.empty:
+        return []
+    row = row.iloc[-1]
+    return list(row[row > 0].index)
+
+
 def walk_forward_weights(returns: pd.DataFrame, method: str, estimator: str = "Ledoit-Wolf", window: int = 252,
-                         rebalance: int = 21, max_weight: float = 0.1, group_caps=None, start: int | None = None) -> pd.DataFrame:
-    """Target weights at each rebalance date (indexed by the date they take effect, i.e. next day)."""
+                         rebalance: int = 21, max_weight: float = 0.1, group_caps=None, start: int | None = None,
+                         members: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Target weights at each rebalance date (indexed by the date they take effect, i.e. next day).
+
+    `members`: optional point-in-time membership (daily frame, positive = in the universe). At each rebalance
+    only the names in the universe on the last day of the window are eligible, so the basket never holds a
+    name before it was one of the largest."""
     fn = METHODS[method]
     est = estimator if callable(estimator) else ESTIMATORS[estimator]  # a callable gets the trailing window
     rows, idx = [], []
     first = window if start is None else max(window, start)
     for end in range(first, len(returns), rebalance):
-        hist = returns.iloc[end - window:end].dropna(axis=1, how="any")
+        hist = returns.iloc[end - window:end]
+        eligible = members_at(members, returns.index[end - 1])
+        if eligible is not None:
+            hist = hist[[c for c in eligible if c in hist.columns]]
+        hist = hist.dropna(axis=1, how="any")
         if hist.shape[1] < 5:
             continue
         cov = est(hist)
@@ -103,11 +123,12 @@ def stats(ret: pd.Series, name: str = "") -> dict:
 
 
 def run_race(returns: pd.DataFrame, methods: list[str], estimator: str = "Ledoit-Wolf", window: int = 252, rebalance: int = 21,
-             max_weight: float = 0.1, cost_bps: float = 5.0, group_caps=None, start: int | None = None) -> tuple[pd.DataFrame, dict, dict]:
+             max_weight: float = 0.1, cost_bps: float = 5.0, group_caps=None, start: int | None = None,
+             members: pd.DataFrame | None = None) -> tuple[pd.DataFrame, dict, dict]:
     """Returns (daily returns per method, stats per method, weights per method)."""
     rets, st, wts = {}, {}, {}
     for m in methods:
-        tw = walk_forward_weights(returns, m, estimator, window, rebalance, max_weight, group_caps, start)
+        tw = walk_forward_weights(returns, m, estimator, window, rebalance, max_weight, group_caps, start, members)
         sim = simulate(returns, tw, cost_bps)
         rets[m] = sim["ret"]
         s = stats(sim["ret"], m)

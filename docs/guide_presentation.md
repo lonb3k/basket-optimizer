@@ -2,9 +2,10 @@
 
 ## 1. La thèse
 La question n'est pas "quel optimiseur est le meilleur" mais "quelle décision déplace vraiment
-le Sharpe". Réponse mesurée : le vol targeting (+0,2 de Sharpe, drawdown divisé par deux)
-compte plus que le choix des poids (écart de 0,4 entre six schémas), et un plafond sur les
-Mag 7 ne coûte rien aux schémas fondés sur le risque parce qu'ils les sous-pondèrent déjà.
+le Sharpe". Réponse mesurée sur un univers point-in-time : le vol targeting (+0,2 de Sharpe,
+drawdown divisé par deux, de −31 % à −15 % en moyenne) compte plus que le choix des poids (Sharpe
+de 0,81 à 0,96 entre six schémas, contre 0,87 pour le SPY), et un plafond sur les Mag 7 ne coûte
+rien aux schémas fondés sur le risque parce qu'ils les sous-pondèrent déjà.
 
 ## 2. Les concepts
 
@@ -31,11 +32,14 @@ rendements : se désendetter quand la vol réalisée monte évite une partie de 
 se réendetter dans le calme récolte la tendance. Version VIX-scaled : réalisée × VIX /
 réalisée de l'indice, réagit plus vite. Les changements de levier sont facturés.
 
-### Survivorship, dit d'abord
-Le top 50 d'aujourd'hui, ce sont les gagnants. Tout panier bâti dessus bat SPY : 26 % par an
-pour l'equal weight contre 15 % pour SPY. RSP, l'ETF S&P equal-weight, a fait 12 % : la
-différence est le biais, mesuré. Les comparaisons entre schémas sont justes (même univers),
-celles avec l'indice ne le sont pas.
+### Survivorship, corrigé
+Le top 50 d'aujourd'hui, ce sont les gagnants. Un backtest sur eux fait 26 % par an en equal weight,
+contre 15 % pour le SPY : ce sont 10 points de biais, pas de talent. Le backtest tourne donc sur un
+univers **point-in-time** : à chaque rebalancement mensuel, seuls les 50 plus gros titres *de ce
+moment-là* sont éligibles (nombre d'actions d'aujourd'hui × prix de l'époque). 95 titres différents
+passent dans le panier entre 2015 et 2026. Résultat : 15,4 % par an et un Sharpe de 0,92, à peu près
+comme le SPY (14,7 %, 0,87). Le gain du vol targeting, lui, résiste à la correction. Limites : le
+nombre d'actions bouge dans le temps (rachats, émissions), et les titres disparus de la cote manquent.
 
 ## 3. Ce que fait le code
 - `covariance.py` : échantillon, EWMA, Ledoit-Wolf (1/T, intensité analytique), avec une cible externe possible.
@@ -45,7 +49,7 @@ celles avec l'indice ne le sont pas.
   distances de corrélation, sans inversion de matrice.
 - `risk.py` : contributions, ENB, ratio de diversification, clusters, tracking error.
 - `backtest.py` : poids walk-forward (covariance sur la fenêtre glissante finissant la
-  veille), simulation avec dérive des positions entre rebalancements et turnover facturé,
+  veille, seuls les membres du top 50 point-in-time de la date sont éligibles), simulation avec dérive des positions entre rebalancements et turnover facturé,
   overlay de vol targeting, stats.
 
 ## 4. Questions probables
@@ -53,10 +57,15 @@ celles avec l'indice ne le sont pas.
 calmes, qui changent ; HRP et ERC tournent à 7 %. Le coût est dans les chiffres.
 **Pourquoi l'ERC par optimisation et HRP par récursion ?** Les deux visent un risque équilibré ;
 HRP n'inverse jamais la covariance, donc reste stable quand elle est mal conditionnée.
-**Que vaut le Sharpe de 1,5 ?** Rien en absolu (survivorship). La hiérarchie entre schémas et
-l'apport du vol targeting sont ce qui est robuste.
-**Comment enlever le biais ?** Avec les compositions historiques de l'indice, qui ne sont pas
-gratuites. C'est la première ligne du "Next".
+**Votre equal weight bat-il le SPY ?** À peine : 15,4 % contre 14,7 % par an, Sharpe 0,92 contre 0,87,
+sur un univers point-in-time. Sur le top 50 d'aujourd'hui on afficherait 26 %, mais ce serait le biais
+des survivants. L'app permet de basculer entre les deux univers pour le montrer.
+**Comment avez-vous enlevé le biais ?** Les compositions historiques de l'indice ne sont pas
+gratuites. On les approche : chaque mois, top 50 par capitalisation estimée avec le nombre d'actions
+d'aujourd'hui et le prix de l'époque. C'est une approximation, mais elle converge vers le vrai top 50
+aujourd'hui et donne des résultats cohérents avec le SPY.
+**Pourquoi le turnover double-t-il en point-in-time ?** Parce que le panier change de membres : des
+titres entrent et sortent du top 50 chaque mois. C'est un coût réel que le panier figé cachait.
 
 ## 5. La covariance qui écoute le marché des options (onglet "Forward-looking risk")
 
@@ -90,9 +99,9 @@ autour de 7 %.
 
 | Prévision | Erreur (RMSE, points) | Corrélation avec le réalisé |
 |---|---|---|
-| Dernière année, ce que suppose l'optimiseur | 17,3 | 0,33 |
-| COR1M brut | 16,6 | 0,57 |
-| COR1M + dernier trimestre, 5 ans glissants | 13,9 | 0,56 |
+| Dernière année, ce que suppose l'optimiseur | 18,0 | 0,36 |
+| COR1M brut | 16,6 | 0,59 |
+| COR1M + dernier trimestre, 5 ans glissants | 14,3 | 0,57 |
 
 La corrélation de l'an dernier est la pire des sept prévisions testées. Le COR1M bouge avant que la
 baisse n'apparaisse dans les rendements. Une fois corrigé, il réduit l'erreur d'environ un cinquième.
@@ -104,15 +113,15 @@ niveau moyen de corrélation. Chaque mois, la matrice prévoit la vol d'un porte
 ensuite à la vol réalisée le mois suivant. On mesure l'écart avec la QLIKE, la fonction de perte
 standard pour les prévisions de variance : plus elle est basse, mieux c'est.
 
-- **Panier équipondéré :** QLIKE 0,494 contre 0,575 pour Ledoit-Wolf, soit 14 % de mieux.
-- **Variance minimale :** 0,552 contre 0,643, soit 14 % de mieux aussi.
-- **Avec le COR1M brut, non corrigé :** 0,840, la pire prévision. C'est la preuve que l'étape de
+- **Panier équipondéré :** QLIKE 0,573 contre 0,674 pour Ledoit-Wolf, soit 15 % de mieux.
+- **Variance minimale :** 0,591 contre 0,674, soit 12 % de mieux.
+- **Avec le COR1M brut, non corrigé :** 0,743, la pire prévision. C'est la preuve que l'étape de
   correction est indispensable.
 
 ### 5.5 Le résultat honnête : ça aide à mesurer le risque, pas à choisir les titres
 
-Le portefeuille de variance minimale ne change presque pas : sa vol réalisée reste à 13,5 % et son Sharpe
-passe de 1,06 à 1,09, ce qui n'est pas significatif. Ses poids dépendent de quels titres sont
+Le portefeuille de variance minimale ne change presque pas : sa vol réalisée passe de 12,8 % à 12,9 % et son
+Sharpe de 0,84 à 0,83, ce qui n'est pas significatif. Ses poids dépendent de quels titres sont
 *relativement* peu risqués, pas du niveau moyen de corrélation. Le marché des options te dit combien de
 risque tu portes, pas quels titres porter.
 
