@@ -294,5 +294,5 @@ def build_sheet(offline: bool = False, top_n: int = 50, **overrides) -> dict:
             "Costs: 5 bps per unit of turnover, including leverage changes. No financing cost on leverage above 1.",
         ],
         "warnings": warnings_,
-        "links": {"repo": REPO_URL, "streamlit": "streamlit run app.py (port 8503)"},
+        "links": {"repo": REPO_URL, "streamlit": "https://lonb3k-basket-optimizer.streamlit.app"},
     }

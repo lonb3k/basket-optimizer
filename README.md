@@ -2,6 +2,8 @@
 
 **Live morning sheet: [https://morning-sheet-olive.vercel.app/basket](https://morning-sheet-olive.vercel.app/basket)**, regenerated every weekday after the US close.
 
+**Interactive app: [lonb3k-basket-optimizer.streamlit.app](https://lonb3k-basket-optimizer.streamlit.app)**, opens on the committed data, no install needed.
+
 ![morning sheet](docs/morning_sheet.gif)
 
 Streamlit app that builds risk-based baskets on the 50 largest S&P 500 names, tests six
