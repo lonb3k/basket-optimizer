@@ -22,7 +22,7 @@ jobs:
       - name: Commit the sheet
         run: |
           git config user.name "basket-bot"
-          git config user.email "basket-bot@users.noreply.github.com"
+          git config user.email "basket-bot@localhost"
           git add sheet/latest.json data/weights_top50.csv
           git diff --cached --quiet || git commit -m "Morning sheet $(date -u +%F)"
           git push
