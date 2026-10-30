@@ -3,8 +3,9 @@
 A covariance matrix estimated on the last year assumes next month's correlation will look like last
 year's. The option market publishes its own view every day: the CBOE one-month implied correlation
 (COR1M). It cannot be plugged in raw, for two reasons:
-- it carries a premium: implied correlation sits about 12 points above the correlation realized
-  next month on average (see the dispersion project), so raw COR1M overstates risk all the time;
+- its level is miscalibrated: on a point-in-time basket it is close to next month's realized
+  correlation on average, but runs about 8 points above it when VIX is above 30 and below it in calm
+  markets (see the dispersion project);
 - it is defined against the index (SPX vol vs the top-50 vols), not as the average pairwise
   correlation of the basket's names, which is what a covariance matrix needs.
 So COR1M is turned into a forecast first: at each rebalance date, an OLS fitted only on past data maps

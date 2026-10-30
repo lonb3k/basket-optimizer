@@ -292,7 +292,8 @@ with tabs[4]:
     st.markdown(
         "**Question.** Every covariance matrix in this app is estimated on the past year, which assumes next month's correlation "
         "will look like last year's. The option market publishes its own view every day, the CBOE one-month implied correlation "
-        "(COR1M). It carries a premium (about 12 points above what is realized, see the dispersion project) and is defined against "
+        "(COR1M). Its level is off in both directions (a premium of about 8 points when VIX is above 30, below realized in calm markets, "
+        "see the dispersion project) and it is defined against "
         "the index rather than as the average pairwise correlation of the names, so it is first turned into a forecast: an OLS "
         "refitted each month on the previous five years only, mapping COR1M and last quarter's correlation to next month's."
     )
